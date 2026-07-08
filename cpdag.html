@@ -1,0 +1,175 @@
+<style>
+#gw{width:75%;height:560px;border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;position:relative;font-family:sans-serif}
+.node-g{cursor:grab}.node-g:active{cursor:grabbing}
+#leg{position:absolute;bottom:10px;left:10px;display:flex;flex-direction:column;gap:4px}
+.leg{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--color-text-secondary)}
+.leg-c{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+#tip{position:absolute;top:10px;right:10px;font-size:10px;color:var(--color-text-tertiary)}
+#etypes{position:absolute;top:10px;left:10px;display:flex;flex-direction:column;gap:4px}
+.etype{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--color-text-secondary)}
+#watermark {position: absolute;bottom: 10px;right: 150px;font-size: 10px;color: var(--color-text-tertiary);opacity: 0.6;pointer-events: none;}
+</style>
+<div id="gw">
+  <svg id="gsv" width="100%" height="560"></svg>
+  <div id="etypes">
+    <div class="etype"><svg width="30" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="#888" stroke-width="1.5" marker-end="url(#arr2)"/></svg>Directed</div>
+    <div class="etype"><svg width="30" height="10"><line x1="0" y1="5" x2="28" y2="5" stroke="#888" stroke-width="1.5" stroke-dasharray="4 3"/></svg>Non oriented</div>
+  </div>
+  <div id="leg">
+    <div class="leg"><div class="leg-c" style="background:#7F77DD"></div>Y (Default, binary)</div>
+    <div class="leg"><div class="leg-c" style="background:#888780"></div>PPP</div>
+    <div class="leg"><div class="leg-c" style="background:#1D9E75"></div>Age</div>
+    <div class="leg"><div class="leg-c" style="background:#BA7517"></div>Credit limit</div>
+    <div class="leg"><div class="leg-c" style="background:#D85A30"></div>Payment status</div>
+    <div class="leg"><div class="leg-c" style="background:#378ADD"></div>Bill amount</div>
+    <div class="leg"><div class="leg-c" style="background:#639922"></div>Amount paid</div>
+    <div class="leg"><div class="leg-c" style="background:#D4537E"></div>Education</div>
+    <div class="leg"><div class="leg-c" style="background:#7B1113"></div>Sex</div>
+  </div>
+<div id="watermark">AI generated</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script>
+(function(){
+const colors={target:"#7F77DD",prop:"#888780",demo:"#1D9E75",credit:"#BA7517",pay:"#D85A30",bill:"#378ADD",amt:"#639922",edu:"#D4537E", sex:"#7B1113"};
+const abbr={EDU_ORD:"Edu",LIMIT_BAL:"LIM",BILL_AMT1:"B1",BILL_AMT2:"B2",BILL_AMT3:"B3",BILL_AMT4:"B4",BILL_AMT5:"B5",BILL_AMT6:"B6",PAY_AMT1:"A1",PAY_AMT2:"A2",PAY_AMT3:"A3",PAY_AMT4:"A4",PAY_AMT5:"A5",PAY_AMT6:"A6",PAY_0:"P0",PAY_2:"P2",PAY_3:"P3",PAY_4:"P4",PAY_5:"P5",PAY_6:"P6", SEX:"SEX"};
+const nodes=[
+  {id:"Y",g:"target",r:20},{id:"PPP",g:"prop",r:16},
+  {id:"AGE",g:"demo",r:15},{id:"EDU_ORD",g:"edu",r:14},
+  {id:"LIMIT_BAL",g:"credit",r:17},
+  {id:"PAY_0",g:"pay",r:14},{id:"PAY_2",g:"pay",r:14},{id:"PAY_3",g:"pay",r:14},
+  {id:"PAY_4",g:"pay",r:14},{id:"PAY_5",g:"pay",r:14},{id:"PAY_6",g:"pay",r:14},
+  {id:"BILL_AMT1",g:"bill",r:14},{id:"BILL_AMT2",g:"bill",r:14},{id:"BILL_AMT3",g:"bill",r:14},
+  {id:"BILL_AMT4",g:"bill",r:14},{id:"BILL_AMT5",g:"bill",r:14},{id:"BILL_AMT6",g:"bill",r:14},
+  {id:"PAY_AMT1",g:"amt",r:14},{id:"PAY_AMT2",g:"amt",r:14},{id:"PAY_AMT3",g:"amt",r:14},
+  {id:"PAY_AMT4",g:"amt",r:14},{id:"PAY_AMT5",g:"amt",r:14},{id:"PAY_AMT6",g:"amt",r:14},
+  {id:"SEX",g:"sex",r:14,fx:60,fy:80}
+];
+
+// Archi aggiornati basati esclusivamente sul JSON fornito
+const rawLinks=[
+  {s:"Y",t:"LIMIT_BAL",d:1}, {s:"Y",t:"PAY_AMT2",d:1}, {s:"PPP",t:"Y",d:1},
+  {s:"AGE",t:"PPP",d:0}, {s:"LIMIT_BAL",t:"EDU_ORD",d:1}, {s:"LIMIT_BAL",t:"PAY_AMT3",d:1},
+  {s:"LIMIT_BAL",t:"PAY_AMT5",d:1}, {s:"AGE",t:"EDU_ORD",d:1}, {s:"PAY_0",t:"Y",d:1},
+  {s:"PAY_2",t:"PAY_0",d:1}, {s:"PAY_2",t:"PAY_5",d:1}, {s:"PAY_3",t:"PAY_0",d:1},
+  {s:"PAY_3",t:"PAY_2",d:1}, {s:"PAY_3",t:"PAY_4",d:0}, {s:"PAY_3",t:"PAY_6",d:1},
+  {s:"PAY_4",t:"PAY_5",d:1}, {s:"PAY_5",t:"PAY_6",d:1}, {s:"PAY_5",t:"BILL_AMT4",d:1},
+  {s:"PAY_6",t:"BILL_AMT5",d:1}, {s:"BILL_AMT1",t:"PAY_2",d:1}, {s:"BILL_AMT1",t:"BILL_AMT2",d:1},
+  {s:"BILL_AMT1",t:"BILL_AMT3",d:1}, {s:"BILL_AMT2",t:"BILL_AMT3",d:1}, {s:"BILL_AMT2",t:"BILL_AMT5",d:1},
+  {s:"BILL_AMT2",t:"PAY_AMT1",d:1}, {s:"BILL_AMT3",t:"BILL_AMT4",d:1}, {s:"BILL_AMT3",t:"PAY_AMT2",d:1},
+  {s:"BILL_AMT4",t:"BILL_AMT5",d:1}, {s:"BILL_AMT4",t:"BILL_AMT6",d:1}, {s:"BILL_AMT4",t:"PAY_AMT3",d:1},
+  {s:"BILL_AMT5",t:"BILL_AMT6",d:1}, {s:"BILL_AMT5",t:"PAY_AMT4",d:1}, {s:"BILL_AMT6",t:"PAY_AMT5",d:1},
+  {s:"PAY_AMT1",t:"PAY_AMT3",d:1}, {s:"PAY_AMT1",t:"PAY_AMT4",d:1}, {s:"PAY_AMT2",t:"PAY_AMT4",d:1},
+  {s:"PAY_AMT2",t:"PAY_AMT5",d:1}, {s:"PAY_AMT3",t:"PAY_AMT5",d:1}, {s:"PAY_AMT6",t:"LIMIT_BAL",d:1},
+  {s:"PAY_AMT6",t:"PAY_AMT4",d:1}
+].map(l=>({source:l.s,target:l.t,directed:l.d}));
+
+const el=document.getElementById("gw");
+const W=el.clientWidth||640, H=560;
+const svg=d3.select("#gsv").attr("viewBox",`0 0 ${W} ${H}`);
+
+const defs=svg.append("defs");
+defs.append("marker").attr("id","arr").attr("viewBox","0 0 10 10").attr("refX",8).attr("refY",5)
+  .attr("markerWidth",6).attr("markerHeight",6).attr("orient","auto-start-reverse")
+  .append("path").attr("d","M2 1L8 5L2 9").attr("fill","none").attr("stroke","#888")
+  .attr("stroke-width",1.5).attr("stroke-linecap","round").attr("stroke-linejoin","round");
+defs.append("marker").attr("id","arr2").attr("viewBox","0 0 10 10").attr("refX",8).attr("refY",5)
+  .attr("markerWidth",6).attr("markerHeight",6).attr("orient","auto-start-reverse")
+  .append("path").attr("d","M2 1L8 5L2 9").attr("fill","none").attr("stroke","#888")
+  .attr("stroke-width",1.5).attr("stroke-linecap","round").attr("stroke-linejoin","round");
+
+const sim=d3.forceSimulation(nodes)
+  .force("link",d3.forceLink(rawLinks).id(d=>d.id).distance(85).strength(0.4))
+  .force("charge",d3.forceManyBody().strength(-280))
+  .force("center",d3.forceCenter(W/2,H/2))
+  .force("collide",d3.forceCollide(d=>d.r+24));
+
+const lkG=svg.append("g");
+const lkSel=lkG.selectAll("line").data(rawLinks).join("line")
+  .attr("stroke","#888").attr("stroke-width",1.5).attr("stroke-opacity",0.55)
+  .attr("stroke-dasharray",d=>d.directed?null:"5 3")
+  .attr("marker-end",d=>d.directed?"url(#arr)":null)
+  .attr("fill","none");
+
+const ndG=svg.append("g");
+const ndSel=ndG.selectAll("g").data(nodes).join("g").attr("class","node-g")
+  .call(d3.drag()
+    .on("start",(e,d)=>{if(!e.active)sim.alphaTarget(0.3).restart();d.fx=d.x;d.fy=d.y})
+    .on("drag",(e,d)=>{d.fx=e.x;d.fy=e.y})
+    .on("end",(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}))
+  .on("click",highlight);
+
+ndSel.append("circle").attr("r",d=>d.r).attr("fill",d=>colors[d.g]).attr("stroke","#fff").attr("stroke-width",1.5);
+ndSel.append("text").text(d=>abbr[d.id]||d.id)
+  .attr("font-size",10).attr("font-weight","500").attr("fill","#fff")
+  .attr("text-anchor","middle").attr("dominant-baseline","central")
+  .style("pointer-events","none").style("font-family","inherit");
+ndSel.append("title").text(d=>d.id);
+
+sim.on("tick",()=>{
+  lkSel
+    .attr("x1",d=>d.source.x).attr("y1",d=>d.source.y)
+    .attr("x2",d=>{
+      if(!d.directed)return d.target.x;
+      const dx=d.target.x-d.source.x,dy=d.target.y-d.source.y,ln=Math.sqrt(dx*dx+dy*dy)||1;
+      return d.target.x-(dx/ln)*(d.target.r+9);
+    })
+    .attr("y2",d=>{
+      if(!d.directed)return d.target.y;
+      const dx=d.target.x-d.source.x,dy=d.target.y-d.source.y,ln=Math.sqrt(dx*dx+dy*dy)||1;
+      return d.target.y-(dy/ln)*(d.target.r+9);
+    });
+  ndSel.attr("transform",d=>`translate(${d.x},${d.y})`);
+});
+
+let sel=null;
+function highlight(e,d){
+  if(sel===d.id){sel=null;ndSel.attr("opacity",1);lkSel.attr("opacity",0.55);return;}
+  sel=d.id;
+  const nb=new Set([d.id]);
+  const activeLinks = new Set();
+
+  if (d.id === "Y") {
+    const children = new Set();
+    
+    // 1. Trova genitori e figli di Y
+    rawLinks.forEach(l => {
+      if (l.source.id === d.id) {
+        nb.add(l.target.id);
+        children.add(l.target.id);
+        activeLinks.add(l);
+      }
+      if (l.target.id === d.id) {
+        nb.add(l.source.id);
+        activeLinks.add(l);
+      }
+      // Nel caso di archi non orientati connessi a Y
+      if (!l.directed && (l.source.id === d.id || l.target.id === d.id)) {
+        nb.add(l.source.id === d.id ? l.target.id : l.source.id);
+        activeLinks.add(l);
+      }
+    });
+
+    // 2. Trova i "coniugi" (genitori dei figli di Y) per completare la Markov Blanket
+    rawLinks.forEach(l => {
+      if (children.has(l.target.id) && l.source.id !== d.id) {
+        nb.add(l.source.id);
+        activeLinks.add(l);
+      }
+    });
+  } else {
+    // Comportamento di default per gli altri nodi: evidenzia solo i vicini
+    rawLinks.forEach(l => {
+      if (l.source.id === d.id || l.target.id === d.id) {
+        nb.add(l.source.id);
+        nb.add(l.target.id);
+        activeLinks.add(l);
+      }
+    });
+  }
+
+  ndSel.attr("opacity",n=>nb.has(n.id)?1:0.3);
+  lkSel.attr("opacity",l=>activeLinks.has(l)?0.9:0.3);
+}
+})();
+</script>

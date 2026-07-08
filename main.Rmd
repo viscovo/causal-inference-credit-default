@@ -1,0 +1,588 @@
+# 1. Environment Setup
+```{r setup_libraries, include=FALSE}
+library(pcalg)
+library(dplyr)
+library(bnlearn)
+library(glmnet)
+library(graph)
+library(boot)
+library(parallel)
+library(ggplot2)
+
+set.seed(3009)
+
+# Directory setup
+dir_export <- "export"
+dir_plots  <- file.path(dir_export, "plots")
+dir_dag    <- file.path(dir_export, "dag")
+dir_csv    <- file.path(dir_export, "csv")
+
+if (!dir.exists(dir_plots)) dir.create(dir_plots, recursive = TRUE)
+if (!dir.exists(dir_dag))   dir.create(dir_dag, recursive = TRUE)
+if (!dir.exists(dir_csv))   dir.create(dir_csv, recursive = TRUE)
+
+```
+
+"In this analysis, we evaluate the causal impact of $PPP$ on the target variable $Y$ using a multi-strategy approach. We begin by preprocessing the dataset to handle categorical dummy encoding and ensuring all numeric variables are consistent for causal discovery algorithms."
+
+# 2. Data Preprocessing
+```{r data cleaning}
+# Load raw dataset
+raw <- read.csv("data/low2791upd.csv")
+raw <- raw %>% rename(PPP = A)
+# 1. Recode EDUCATION to establish a TRUE logical monotonic order.
+# Literature defines: 1=graduate, 2=university, 3=high school, 4,5,6=others.
+# We create EDU_ORD where a higher numeric value indicates a higher level of education:
+# 1 = Others, 2 = High_school, 3 = University, 4 = Graduate_school
+raw <- raw %>%
+  mutate(
+    EDU_ORD = case_when(
+      EDUCATION %in% c(4, 5, 6) ~ 1,
+      EDUCATION == 3 ~ 2,
+      EDUCATION == 2 ~ 3,
+      EDUCATION == 1 ~ 4,
+      TRUE ~ 1
+    ),
+    EDU_CAT = case_when(
+      EDUCATION == 1 ~ "Graduate_school",
+      EDUCATION == 2 ~ "University",
+      EDUCATION == 3 ~ "High_school",
+      TRUE ~ "Others"
+    )
+  )
+
+cols_num <- c(
+  "Y", "PPP", "LIMIT_BAL", "SEX", "AGE", "EDU_ORD",
+  "PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6",
+  paste0("BILL_AMT", 1:6),
+  paste0("PAY_AMT", 1:6)
+)
+
+pay_values <- c(-2, -1, 0, 1:9)
+pay_cols <- c("PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6")
+
+# data_num: Strict dataset for Causal Discovery (PC Algorithm / IAMB)
+data_num <- raw %>%
+  select(any_of(cols_num)) %>%
+  mutate(across(everything(), ~ as.numeric(as.character(.)))) %>%
+  as.data.frame()
+
+# Enforce strict ordinal structure for the PAY variables
+data_num <- data_num %>%
+  mutate(across(all_of(pay_cols), ~ as.integer(factor(.x, levels = pay_values, ordered = TRUE))))
+
+# Generate dummy variables for EDUCATION to be used in predictive models (LASSO, Logistic Regression)
+edu_dummies <- as.data.frame(model.matrix(~ EDU_CAT, data = raw)[, -1])
+colnames(edu_dummies) <- sub("^EDU_CAT", "EDU", colnames(edu_dummies))
+dummy_cols <- make.names(colnames(edu_dummies))
+
+# data_pred: Dataset for G-computation and IPW (where dummy variables are required for linear models)
+data_pred <- data_num %>%
+  select(-EDU_ORD) %>% # Drop the ordinal version to prevent collinearity issues
+  bind_cols(edu_dummies)
+
+colnames(data_pred) <- make.names(colnames(data_pred))
+```
+
+```{r check}
+print(dim(data_num))
+print(sapply(data_num, function(x) length(unique(x))))
+print(table(data_num$Y, useNA = "ifany"))
+print(table(data_num$PPP, useNA = "ifany"))
+```
+
+```{r check}
+dim(data_pred)
+str(data_pred)
+```
+# 3. PC Algorithm
+To identify the underlying causal structure, we apply the PC Algorithm to estimate the global skeleton of the DAG and the IAMB (Incremental Association Markov Blanket) to isolate the local neighborhood of $Y$. This allows us to define theoretically sound adjustment sets based on parents, children, and spouses.
+```{r fit}
+Cmat_spearman <- cor(data_num, use = "pairwise.complete.obs", method = "spearman")
+Cmat_rank <- 2 * sin(pi / 6 * Cmat_spearman)
+n_obs <- nrow(data_num)
+suffStat_rank <- list(C = Cmat_spearman, n = n_obs)
+
+pc.fit <- pc(suffStat = suffStat_rank,
+             indepTest = gaussCItest, 
+             labels = colnames(data_num),
+             alpha = 0.05,
+             verbose = FALSE)
+
+print(pc.fit)
+```
+
+```{r edge count}
+if (requireNamespace("graph", quietly = TRUE)) {
+  g1 <- as(pc.fit@graph, "graphNEL")
+  edge_count <- sum(sapply(graph::edges(g1), length))
+  cat("Edges (with PAY):", edge_count, "\n")
+}
+```
+
+```{r plot}
+plot(pc.fit, main = "PC graph (with PAY)")
+```
+
+# 4. Graph Export and Edge Analysis
+```{r export, echo=FALSE, results='hide', message=FALSE}
+if (requireNamespace("Rgraphviz", quietly = TRUE)) {
+  file_output <- file.path(dir_plots, "pc.png")
+  
+  png(file_output, width = 1200, height = 800)
+  plot(pc.fit, main = "PC graph")
+  dev.off()
+}
+
+file_output <- file.path(dir_plots, "pc.pdf")
+pdf(file_output, width = 12, height = 8)
+par(cex = 1.2, mai = c(0.5, 0.5, 1, 0.5))
+plot(pc.fit, main = "PC graph (with PAY)")
+dev.off()
+
+extract_edges_from_pc <- function(pc_obj) {
+  if (!requireNamespace("graph", quietly = TRUE)) stop("'graph' package required")
+  g <- as(pc_obj@graph, "graphNEL")
+  ed_list <- graph::edges(g)
+  nodes <- names(ed_list)
+  rows <- list()
+  for (u in nodes) {
+    vs <- ed_list[[u]]
+    if (length(vs) > 0) for (v in vs) rows[[length(rows) + 1]] <- c(u, v)
+  }
+  if (length(rows) == 0) return(data.frame())
+  df <- do.call(rbind, rows)
+  df <- data.frame(from = df[, 1], to = df[, 2], stringsAsFactors = FALSE)
+  df$u_min <- pmin(df$from, df$to)
+  df$u_max <- pmax(df$from, df$to)
+  df$pair <- paste0(df$u_min, "||", df$u_max)
+  uniq_pairs <- unique(df$pair)
+  out <- do.call(rbind, lapply(uniq_pairs, function(p) {
+    sub <- df[df$pair == p, , drop = FALSE]
+    if (nrow(sub) == 2) {
+      data.frame(from = sub$u_min[1], to = sub$u_max[1], type = "undirected", stringsAsFactors = FALSE)
+    } else {
+      data.frame(from = sub$from[1], to = sub$to[1], type = "directed", stringsAsFactors = FALSE)
+    }
+  }))
+  out$text <- ifelse(out$type == "directed", paste0(out$from, " -> ", out$to), paste0(out$from, " -- ", out$to))
+  rownames(out) <- NULL
+  return(out)
+}
+
+save_edges_and_adj <- function(pc_obj, prefix) {
+  if (!requireNamespace("graph", quietly = TRUE)) stop("'graph' package required")
+  if (!requireNamespace("jsonlite", quietly = TRUE)) install.packages("jsonlite")
+  edges <- extract_edges_from_pc(pc_obj)
+  write.csv(edges, paste0(prefix, "_edges.csv"), row.names = FALSE)
+  jsonlite::write_json(edges, paste0(prefix, "_edges.json"), pretty = TRUE, auto_unbox = TRUE)
+  writeLines(edges$text, paste0(prefix, "_edges.txt"))
+
+  g <- as(pc_obj@graph, "graphNEL")
+  ed_list <- graph::edges(g)
+  nodes <- names(ed_list)
+  amat <- matrix(0, nrow = length(nodes), ncol = length(nodes), dimnames = list(nodes, nodes))
+  for (u in nodes) for (v in ed_list[[u]]) amat[u, v] <- 1
+  write.csv(amat, paste0(prefix, "_adjacency.csv"), row.names = TRUE)
+
+  invisible(list(edges = edges, adjacency = amat))
+}
+
+# Run exports for both graphs
+save_edges_and_adj(pc.fit, file.path(dir_dag, "with_pay"))
+```
+
+# 5. Fast-IAMB Algorithm
+We use discretized data to handle the mixed nature (continuous/categorical) 
+and non-Gaussian distribution of the variables.
+```{r iamb discretized}
+
+target_Y <- "Y" 
+
+# 1. Local Dataset Preparation
+# We create a specific copy for IAMB to avoid altering the original numeric dataset.
+data_iamb <- data_num
+
+# Define continuous and categorical columns based on the dataset structure.
+cont_cols <- c("AGE", "LIMIT_BAL", paste0("BILL_AMT", 1:6), paste0("PAY_AMT", 1:6))
+cat_cols  <- c("Y", "PPP", "SEX", "EDU_ORD", "PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6")
+
+# Discretization: We transform continuous variables into 3 categories (low, medium, high) 
+# using the quantile method to ensure robustness against non-Gaussianity.
+data_iamb[cont_cols] <- discretize(data_iamb[cont_cols], method = "quantile", breaks = 3)
+
+# Conversion to Factors: Mandatory for 'bnlearn' to apply discrete independence tests.
+data_iamb[cat_cols] <- lapply(data_iamb[cat_cols], as.factor)
+
+# 2. Algorithm Execution
+# Fast-IAMB is a constraint-based method used to identify the Markov Blanket (MB) 
+# around the target variable Y.
+# We use the Mutual Information test ("mi"), which is ideal for discrete/discretized data.
+mb_iamb <- learn.mb(data_iamb, node = target_Y, method = "fast.iamb", test = "mi")
+
+# 3. Extraction of Adjustment Set L
+# The Markov Blanket includes parents, children, and spouses.
+# To estimate the Average Causal Effect (ACE), we exclude the treatment 'PPP' 
+# from the covariates set L.
+L_iamb <- setdiff(mb_iamb, "PPP")
+
+# Output Results
+cat("\n--- Task 2.4 Results ---")
+cat("\nEstimated Markov Blanket for Y (Fast-IAMB):\n")
+print(mb_iamb)
+
+cat("\nIdentified Adjustment Variables (L):\n")
+print(L_iamb)
+```
+# 6. Variable Selection via LASSO
+```{r lasso}
+# We apply the Post-Double-Selection LASSO methodology to select potential confounders.
+# Note on LASSO: It does NOT require variables to follow a Gaussian distribution. 
+# It only requires variables to be standardized to ensure the L1 penalty is applied fairly 
+# across different scales. The cv.glmnet function handles standardization internally by default.
+
+predictors <- setdiff(colnames(data_pred), c("Y", "PPP"))
+X <- as.matrix(data_pred[, predictors])
+
+# LASSO for the Outcome (Y)
+cv_lasso_Y <- cv.glmnet(X, data_pred$Y, family = "binomial", alpha = 1, nfolds = 10)
+coef_Y     <- coef(cv_lasso_Y, s = "lambda.min")
+L_lasso_Y  <- setdiff(rownames(coef_Y)[coef_Y[, 1] != 0], "(Intercept)")
+
+# LASSO for the Treatment (PPP)
+cv_lasso_PPP <- cv.glmnet(X, data_pred$PPP, family = "binomial", alpha = 1, nfolds = 10)
+coef_PPP     <- coef(cv_lasso_PPP, s = "lambda.min")
+L_lasso_PPP  <- setdiff(rownames(coef_PPP)[coef_PPP[, 1] != 0], "(Intercept)")
+```
+
+```{r pc_adjustment_set}
+# Extract the local neighborhood for Y from the DAG generated by the Rank PC Algorithm
+edges <- read.csv("export/dag/with_pay_edges.csv")
+parents_Y <- edges$from[edges$to == "Y"]
+children_Y <- edges$to[edges$from == "Y"]
+# Spouses are nodes that share a child with Y but are not Y itself
+spouses_Y <- edges$from[edges$to %in% children_Y & edges$from != "Y"]
+```
+
+We define four distinct adjustment sets to perform a sensitivity analysis. By comparing the Full model against sets selected via LASSO, PC, and IAMB, we can determine if the causal estimate remains stable across different variable selection strategies.
+```{r adjustment_sets_definition}
+# We define different sets (Full, LASSO, PC, and IAMB) 
+# to compare their performance in ACE (Average Causal Effect) estimation.
+
+# Helper function to replace the ordinal variable with its respective dummy columns
+# since linear models (like our final G-computation/IPW logistic regressions) require dummies.
+map_dummies <- function(features) {
+  if ("EDU_ORD" %in% features) { # Updated from "EDUCATION" to match our preprocessing
+    features <- setdiff(features, "EDU_ORD")
+    features <- unique(c(features, dummy_cols))
+  }
+  return(features)
+}
+
+L_full  <- setdiff(colnames(data_pred), c("Y", "PPP"))
+# Post-Double-Selection requires taking the union of the variables selected for Y and PPP
+L_lasso <- union(L_lasso_Y, L_lasso_PPP)
+
+# Adjustment set based on the PC Algorithm's local structure
+L_pc    <- setdiff(union(union(parents_Y, children_Y), spouses_Y), "PPP")
+L_pc    <- map_dummies(L_pc)
+
+# Adjustment set based on the IAMB estimated Markov Blanket
+L_iamb <- setdiff(mb_iamb, "PPP")
+L_iamb <- map_dummies(L_iamb)
+
+# Ensure syntax compatibility for all variable names to avoid formula errors later
+L_full  <- make.names(L_full)
+L_lasso <- make.names(L_lasso)
+L_pc    <- make.names(L_pc)
+L_iamb  <- make.names(L_iamb)
+```
+
+```{r adjustment_sets_plots}
+# Print current sets to console for the report
+cat("\n--- FINAL ADJUSTMENT SETS ---")
+cat("\n1. FULL SET (n =", length(L_full), "):\n", L_full)
+cat("\n\n2. PC GRAPH SET (n =", length(L_pc), "):\n", L_pc)
+cat("\n\n3. IAMB SET (n =", length(L_iamb), "):\n", L_iamb)
+cat("\n\n4. LASSO SET (n =", length(L_lasso), "):\n", L_lasso)
+
+# Create a summary table
+max_len <- max(length(L_full), length(L_lasso), length(L_pc), length(L_iamb))
+pad <- function(x) c(x, rep(NA, max_len - length(x)))
+
+comparison_table <- data.frame(
+  Full = pad(L_full),
+  LASSO = pad(L_lasso),
+  PC_Graph = pad(L_pc),
+  IAMB = pad(L_iamb)
+)
+
+# Save to the CSV folder
+write.csv(comparison_table, file.path(dir_csv, "adjustment_sets_summary.csv"), row.names = FALSE, na = "")
+```
+# 7. Outcome Model (G-computation)
+The Average Causal Effect (ACE) is estimated using two robust frameworks: Outcome Regression (G-computation) and Inverse Probability Weighting (IPW). Consistency between these two methods indicates that the causal estimates are less likely to be biased by model misspecification.
+```{r logistic}
+make_formula <- function(L) {
+  as.formula(paste("Y ~", paste(c("PPP", L), collapse = " + ")))
+}
+fit_full  <- glm(make_formula(L_full),  data = data_pred, family = binomial)
+fit_lasso <- glm(make_formula(L_lasso), data = data_pred, family = binomial)
+fit_pc    <- glm(make_formula(L_pc),    data = data_pred, family = binomial)
+fit_iamb <- glm(make_formula(L_iamb), data = data_pred, family = binomial)
+```
+
+
+```{r}
+ace <- function(fit) {
+  # Generate counterfactual datasets (A=1 and A=0)
+  d1 <- data_pred; d1$PPP <- 1
+  d0 <- data_pred; d0$PPP <- 0
+  
+  # Predict potential outcomes
+  p1 <- predict(fit, newdata = d1, type = "response")
+  p0 <- predict(fit, newdata = d0, type = "response")
+  
+  mean(p1) - mean(p0)
+}
+
+ace_full  <- ace(fit_full)
+ace_lasso <- ace(fit_lasso)
+ace_pc    <- ace(fit_pc)
+ace_iamb <- ace(fit_iamb)
+```
+The comparison between the Naive ACE and the adjusted models highlights the presence of confounding bias. If the adjusted ACE is smaller than the naive estimate, it suggests that the raw association was partially driven by common causes rather than a pure treatment effect.
+```{r results}
+print("ACE for each model:")
+print(paste("Full Model:", ace_full))
+print(paste("LASSO:", ace_lasso))
+print(paste("PC:", ace_pc))
+print(paste("IAMB:", ace_iamb))
+```
+
+# 8. Inverse Probability Weighting (IPW)
+```{r ipw_estimators}
+make_formula_ps <- function(L) {
+  if(length(L) == 0) return(as.formula("PPP ~ 1"))
+  as.formula(paste("PPP ~", paste(L, collapse = " + ")))
+}
+
+fit_ps_full  <- glm(make_formula_ps(L_full),  data = data_pred, family = binomial)
+fit_ps_lasso <- glm(make_formula_ps(L_lasso), data = data_pred, family = binomial)
+fit_ps_pc    <- glm(make_formula_ps(L_pc),    data = data_pred, family = binomial)
+fit_ps_iamb <- glm(make_formula_ps(L_iamb), data = data_pred, family = binomial)
+
+ace_ipw <- function(fit_ps, data) {
+  
+  Y <- as.numeric(as.character(data$Y))
+  A <- data$PPP
+  
+  # Estimate Propensity Scores
+  p_A1 <- predict(fit_ps, type = "response")
+  p_A1 <- pmax(pmin(p_A1, 0.999), 0.001)
+  # Calculate expectations for potential outcomes Y(1) and Y(0)
+  # Formula: E[ Y * I(A=1) / P(A=1|L) ]
+  E_Y1 <- mean((Y * (A == 1)) / p_A1)
+  
+  # Formula: E[ Y * I(A=0) / P(A=0|L) ]
+  E_Y0 <- mean((Y * (A == 0)) / (1 - p_A1))
+  
+  return(E_Y1 - E_Y0)
+}
+
+ace_ipw_full  <- ace_ipw(fit_ps_full,  data_pred)
+ace_ipw_lasso <- ace_ipw(fit_ps_lasso, data_pred)
+ace_ipw_pc    <- ace_ipw(fit_ps_pc,    data_pred)
+ace_ipw_iamb <- ace_ipw(fit_ps_iamb, data_pred)
+
+cat("\n=== AVERAGE CAUSAL EFFECTS (IPW Estimators) ===\n")
+cat(sprintf("Full Model : %f\n", ace_ipw_full))
+cat(sprintf("LASSO      : %f\n", ace_ipw_lasso))
+cat(sprintf("PC Algo    : %f\n", ace_ipw_pc))
+cat(sprintf("IAMB : %f\n", ace_ipw_iamb))
+```
+
+
+# 9. Comparative Results
+```{r}
+results <- data.frame(
+  Adjustment = c("Full", "LASSO", "PC", "IAMB"),
+  ACE_OR     = round(c(ace_full,  ace_lasso,  ace_pc,  ace_iamb), 4),
+  ACE_IPW    = round(c(ace_ipw_full, ace_ipw_lasso, ace_ipw_pc, ace_ipw_iamb), 4)
+)
+results$Diff_OR_IPW <- round(abs(results$ACE_OR - results$ACE_IPW), 4)
+print(results)
+
+# Adjustment Set Cardinality
+cat("\nAdjustment Set Cardinality:\n")
+cat("Full: ",  length(L_full),  "\n")
+cat("LASSO: ", length(L_lasso), "\n")
+cat("PC: ",    length(L_pc),    "\n")
+cat("IAMB: ", length(L_iamb), "\n")
+
+# Naive estimate vs. adjusted ACE to evaluate confounding bias
+naive <- mean(data_pred$Y[data_pred$PPP == 1]) - 
+         mean(data_pred$Y[data_pred$PPP == 0])
+cat("\nNaive ACE (unadjusted):", round(naive, 4), "\n")
+cat("=> Estimated confounding bias (vs Full OR):", 
+    round(naive - ace_full, 4), "\n")
+```
+
+To assess the statistical significance of our findings, we execute a non-parametric bootstrap ($B=500$). This procedure provides the 95% confidence intervals necessary to determine if the estimated effect of $PPP$ is reliably different from zero across all selected adjustment strategies.
+```{r bootstrap}
+B_boot <- 500
+alpha_boot <- 0.05
+
+boot_ace_fun <- function(data, indices) {
+  d <- data[indices, ]
+
+  
+  .ace_or <- function(fit, dat) {
+    d1 <- dat; d1$PPP <- 1
+    d0 <- dat; d0$PPP <- 0
+    p1 <- predict(fit, newdata = d1, type = "response")
+    p0 <- predict(fit, newdata = d0, type = "response")
+    mean(p1) - mean(p0)
+  }
+
+  .ace_ipw <- function(fit_ps, dat) {
+    Y   <- as.numeric(as.character(dat$Y))
+    A   <- dat$PPP
+    pA1 <- predict(fit_ps, newdata = dat, type = "response")
+    pA1 <- pmax(pmin(pA1, 0.999), 0.001)
+    E_Y1 <- mean((Y * (A == 1)) / pA1)
+    E_Y0 <- mean((Y * (A == 0)) / (1 - pA1))
+    E_Y1 - E_Y0
+  }
+
+  # Fit outcome regression (OR)
+  fit_b_full  <- tryCatch(glm(make_formula(L_full),  data = d, family = binomial), error = function(e) NULL)
+  fit_b_lasso <- tryCatch(glm(make_formula(L_lasso), data = d, family = binomial), error = function(e) NULL)
+  fit_b_pc    <- tryCatch(glm(make_formula(L_pc),    data = d, family = binomial), error = function(e) NULL)
+  fit_b_iamb <- tryCatch(glm(make_formula(L_iamb), data = d, family = binomial), error = function(e) NULL)
+
+  # Fit propensity score models (IPW)
+  fit_b_ps_full  <- tryCatch(glm(make_formula_ps(L_full),  data = d, family = binomial), error = function(e) NULL)
+  fit_b_ps_lasso <- tryCatch(glm(make_formula_ps(L_lasso), data = d, family = binomial), error = function(e) NULL)
+  fit_b_ps_pc    <- tryCatch(glm(make_formula_ps(L_pc),    data = d, family = binomial), error = function(e) NULL)
+  fit_b_ps_iamb <- tryCatch(glm(make_formula_ps(L_iamb), data = d, family = binomial), error = function(e) NULL)
+
+  # Calculate ACE (NA if fit failed)
+  safe_or  <- function(fit) if (is.null(fit)) NA_real_ else .ace_or(fit, d)
+  safe_ipw <- function(fit) if (is.null(fit)) NA_real_ else .ace_ipw(fit, d)
+
+  c(
+    OR_Full  = safe_or(fit_b_full),
+    OR_LASSO = safe_or(fit_b_lasso),
+    OR_PC    = safe_or(fit_b_pc),
+    OR_IAMB = safe_or(fit_b_iamb),
+    IPW_Full  = safe_ipw(fit_b_ps_full),
+    IPW_LASSO = safe_ipw(fit_b_ps_lasso),
+    IPW_PC    = safe_ipw(fit_b_ps_pc),
+    IPW_IAMB = safe_ipw(fit_b_ps_iamb)
+  )
+}
+
+```
+
+```{r bootstrap_run}
+n_cores <- max(1, detectCores() - 1)
+
+cl <- makeCluster(n_cores)
+clusterExport(cl, varlist = c(
+  "data_pred", "make_formula", "make_formula_ps",
+  "L_full", "L_lasso", "L_pc", "L_iamb"
+))
+clusterEvalQ(cl, {
+  library(boot)
+  library(glmnet)
+})
+clusterSetRNGStream(cl, 3009)
+
+boot_obj <- boot(
+  data      = data_pred,
+  statistic = boot_ace_fun,
+  R         = B_boot,
+  parallel  = "snow",
+  ncpus     = n_cores,
+  cl        = cl
+)
+
+stopCluster(cl)
+cat("Bootstrap completed.\n")
+```
+
+
+```{r bootstrap_ci}
+# Extract 95% Percentile Confidence Intervals
+nms <- c("OR_Full", "OR_LASSO", "OR_PC", "OR_IAMB",
+         "IPW_Full", "IPW_LASSO", "IPW_PC", "IPW_IAMB")
+
+point_ests <- c(ace_full, ace_lasso, ace_pc, ace_iamb,
+                ace_ipw_full, ace_ipw_lasso, ace_ipw_pc, ace_ipw_iamb)
+
+ci_list <- lapply(seq_along(nms), function(i) {
+  ci <- tryCatch(
+    boot.ci(boot_obj, conf = 1 - alpha_boot, type = "perc", index = i),
+    error = function(e) NULL
+  )
+  if (is.null(ci)) {
+    c(lower = NA_real_, upper = NA_real_)
+  } else {
+    c(lower = ci$percent[4], upper = ci$percent[5])
+  }
+})
+
+ci_df <- do.call(rbind, ci_list)
+rownames(ci_df) <- NULL
+
+results_boot <- data.frame(
+  Estimator  = nms,
+  ACE        = round(point_ests, 4),
+  Lower_95   = round(ci_df[, "lower"], 4),
+  Upper_95   = round(ci_df[, "upper"], 4)
+)
+results_boot$Width <- round(results_boot$Upper_95 - results_boot$Lower_95, 4)
+
+cat("\n=== BOOTSTRAP RESULTS (B =", B_boot, ") ===\n")
+print(results_boot)
+
+write.csv(
+  results_boot,
+  file.path(dir_csv, "ace_bootstrap_CI.csv"),
+  row.names = FALSE
+)
+```
+
+```{r bootstrap_plot}
+
+
+results_boot$Method     <- ifelse(grepl("^OR_",  results_boot$Estimator), "G-computation (OR)", "IPW")
+results_boot$Adjustment <- sub("^(OR|IPW)_", "", results_boot$Estimator)
+results_boot$Adjustment <- factor(results_boot$Adjustment, levels = c("Full", "LASSO", "PC", "IAMB"))
+
+g_boot_ci <- ggplot(results_boot, aes(x = Adjustment, y = ACE, color = Method, group = Method)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_pointrange(
+    aes(ymin = Lower_95, ymax = Upper_95),
+    position = position_dodge(width = 0.4),
+    linewidth = 0.9, size = 0.7
+  ) +
+  scale_color_manual(values = c("G-computation (OR)" = "steelblue", "IPW" = "darkorange")) +
+  labs(
+    x        = "Adjustment Set",
+    y        = "Average Causal Effect (ACE)",
+    color    = "Estimator",
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+
+print(g_boot_ci)
+    
+ggsave(
+  filename = file.path(dir_plots, "ace_bootstrap_CI_.png"),
+  plot = g_boot_ci, width = 10, height = 6, dpi = 300
+)
+```
+
+If the confidence intervals for all models do not cross the zero line, we conclude that $PPP$ has a statistically significant causal effect on $Y$. Furthermore, the convergence of IAMB, PC, and LASSO models toward similar values, with narrower intervals than the Full model, confirms that causal discovery leads to a more efficient and precise estimation of the treatment effect.

@@ -1,0 +1,465 @@
+\documentclass[11pt, a4paper]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{tabularx}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{cite}
+\usepackage{amsthm}
+\theoremstyle{definition}
+\usepackage{multirow}
+\newtheorem{definition}{Definition}[section]
+
+\geometry{top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm}
+
+\title{\textbf{Causal Effect of Payment Protection Plans on Credit Default Risk}}
+\author{Edoardo Lanzetti \and Valerio Viscovo}
+\date{April 05, 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Understanding whether Payment Protection Plans (PPPs) genuinely reduce credit default
+risk is critical for financial institutions. However, evaluating observational data is
+challenging because the treatment is not randomized. In this study, we estimate the
+Average Causal Effect (ACE) of PPP enrollment on credit default. To rigorously control
+for confounding, we compare a naive full-covariate baseline against a Post-Double-Selection
+LASSO and two structural causal discovery methods (Rank PC and Fast-IAMB). The ACE is
+estimated using Outcome Regression (G-computation) and Inverse Probability Weighting (IPW)
+via logistic regression, with uncertainty quantified through a non-parametric bootstrap.
+Our findings indicate a statistically significant positive causal effect of PPPs on default
+risk, consistent with a mechanism of ``moral hazard'': protection from immediate financial
+penalties may inadvertently encourage riskier repayment behavior. Furthermore, structurally
+derived adjustment sets yield superior statistical efficiency compared to high-dimensional
+predictive models, avoiding practical positivity violations that render high-dimensional IPW
+estimates uninformative.
+\end{abstract}
+
+\section{Introduction and Causal Framework}
+
+Banks routinely track whether customers will miss their credit card payments, as defaults
+on repayments constitute the primary source of interest income for card issuers. To
+mitigate the risk of default during financial hardship, certain customers may enroll in
+Payment Protection Plans (PPPs), which allow them to pause repayments without incurring
+immediate interest charges.
+
+Understanding whether PPPs genuinely reduce default risk is of direct practical importance,
+yet this question cannot be answered by a naive comparison of enrollees and non-enrollees.
+Customers who elect to enroll in a PPP are likely to be at a higher \textit{a priori}
+risk of missing payments, introducing a selection bias. Because of this structural
+confounding, the true causal effect is distinct from the simple observational difference:
+\begin{equation*}
+    \text{Causal Effect} \neq \mathbb{E}[Y \mid A=1] - \mathbb{E}[Y \mid A=0]
+\end{equation*}
+
+To formally define the causal estimand, we rely on the Potential Outcomes framework
+\cite{hernan2020causal}. Let the binary treatment $A \in \{0, 1\}$ denote PPP enrollment,
+and the binary outcome $Y \in \{0, 1\}$ denote credit default. We define $Y^{a=1}$ and
+$Y^{a=0}$ as the potential outcomes if a customer were compulsorily enrolled or not
+enrolled, respectively. The Average Causal Effect (ACE) is defined as:
+\begin{equation*}
+    \text{ACE} = \mathbb{E}[Y^{a=1}] - \mathbb{E}[Y^{a=0}]
+\end{equation*}
+
+To identify the ACE from observational data, we rely on three core causal assumptions
+\cite{hernan2020causal}:
+\begin{enumerate}
+    \item \textbf{Consistency:} The observed outcome matches the potential outcome for the
+    treatment actually received: $Y = A Y^{a=1} + (1-A) Y^{a=0}$.
+    \item \textbf{Conditional Exchangeability:} $Y^a \perp\!\!\!\perp A \mid \mathbf{L}$.
+    Conditional on a set of observed covariates $\mathbf{L}$, the treatment assignment is
+    independent of the potential outcomes. To satisfy this, $\mathbf{L}$ must block all
+    \textit{backdoor paths} (spurious associations driven by common causes) without opening
+    \textit{collider paths}. A collider $C$ is a common effect of two independent variables
+    ($A \rightarrow C \leftarrow Y$); conditioning on $C$ induces a spurious dependence
+    between $A$ and $Y$.
+    \item \textbf{Positivity:} $0 < \mathbb{P}(A=1 \mid \mathbf{L} = \ell) < 1$ for all
+    $\ell$. Every individual must have a strictly positive probability of receiving either
+    treatment. Adjusting for high-dimensional sets $\mathbf{L}$ often violates this
+    assumption in practice (practical positivity violation), leading to extreme estimation
+    variance \cite{hernan2020causal}.
+\end{enumerate}
+
+This report addresses two questions: (1)~does PPP enrollment causally increase or decrease
+the probability of credit default? (2)~how does the choice of adjustment set, informed by
+causal discovery, affect both the magnitude and precision of the causal estimate? To answer
+them, we compare four adjustment strategies of increasing theoretical sophistication---a
+full covariate model, LASSO-based selection, and two causal discovery methods---and evaluate
+each under two complementary estimators (OR and IPW) whose agreement serves as a robustness
+check against model misspecification.
+
+\section{Dataset Overview}
+
+The dataset mimics a real credit repayment study ($n = 500$). The variables are summarized
+in Table~\ref{tab:data-summary}. To ensure clarity in the subsequent causal graphs, we
+specify the financial nomenclature:
+\begin{itemize}
+    \item \texttt{LIMIT\_BAL}: total credit granted (individual and family combined).
+    \item \texttt{PAY\_0} to \texttt{PAY\_6}: repayment status for the previous six months
+    on an ordinal scale ($-2 =$ no consumption, $-1 =$ paid in full, $0 =$ minimum payment,
+    $1$ to $9 =$ months of delay).
+    \item \texttt{BILL\_AMT1} to \texttt{BILL\_AMT6}: statement balance billed each month.
+    \item \texttt{PAY\_AMT1} to \texttt{PAY\_AMT6}: actual amount paid each month.
+\end{itemize}
+
+\begin{table}[H]
+    \centering
+    \caption{Summary of dataset variables ($n = 500$).}
+    \label{tab:data-summary}
+    \begin{tabular}{p{5.5cm} p{3.5cm} p{5cm}}
+        \toprule
+        \textbf{Variable} & \textbf{Type} & \textbf{Summary / Range} \\
+        \midrule
+        Missed payment ($Y$)              & Binary           & 24\% defaulted \\
+        PPP enrollment ($A$)              & Binary           & 44\% enrolled \\
+        Credit limit (\texttt{LIMIT\_BAL})& Continuous       & $[10\,000;\ 650\,000]$ \\
+        Age (\texttt{AGE})                & Continuous       & $[21;\ 73]$ \\
+        Payment status (\texttt{PAY\_0--6})& Ordered categ.  & $-2$ to $9$ (integer) \\
+        Bill amount (\texttt{BILL\_AMT1--6})& Continuous     & $[-2{,}650;\ 630{,}458]$ \\
+        Amount paid (\texttt{PAY\_AMT1--6}) & Continuous     & $[0;\ 193{,}358]$ \\
+        Education                         & Categorical      & Grad., Univ., High School \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\paragraph{Preprocessing.}
+The ordinal \texttt{PAY} variables are encoded as integers preserving their natural order
+(higher values indicate longer payment delay). The categorical \texttt{EDUCATION} variable
+is dummy-encoded into three binary indicators (Graduate school as the reference category)
+for use in the regression models. Two versions of the dataset are maintained throughout:
+one with the original ordinal encoding for causal discovery algorithms (which require
+numeric or factor inputs), and one with dummy-encoded education for the logistic regression
+models used in estimation.
+
+\section{Causal Discovery and Adjustment Strategies}
+
+Identifying the correct adjustment set $\mathbf{L}$ is the central methodological challenge:
+conditioning on too few variables leaves residual confounding, while conditioning on too
+many risks positivity violations and efficiency loss. We evaluate four strategies of
+increasing theoretical sophistication. Structural methods (Rank PC, Fast-IAMB) recover the
+Markov blanket of $Y$ from the data-generating mechanism directly, providing a principled
+answer to which variables must be adjusted for. The data-adaptive LASSO provides a flexible
+benchmark that does not require distributional assumptions but lacks the graph-theoretic
+guarantees of structural methods. The Full model serves as a naive upper bound. All analyses
+use a fixed random seed for reproducibility.
+
+\begin{definition}[Markov blanket]
+Let $V$ be the set of all variables in a domain. A Markov Blanket of a target variable
+$T \in V$, denoted $B(T) \subseteq V \setminus \{T\}$, is any subset of variables such
+that $T$ is conditionally independent of all remaining variables given $B(T)$
+\cite{pearl2009causality}:
+\begin{equation*}
+    T \perp\!\!\!\perp (V \setminus (B(T) \cup \{T\})) \mid B(T)
+\end{equation*}
+\end{definition}
+A minimal Markov Blanket is called a \textit{Markov Boundary}, corresponding uniquely to
+the parents, children, and spouses of $T$ in a DAG. Adjusting for the Markov Boundary of
+$Y$ (excluding the treatment $A$) is sufficient to block all backdoor paths without
+over-adjusting.
+
+\subsection{Causal Structure via Rank PC Algorithm}
+
+Standard implementations of the PC algorithm test conditional independence via partial
+correlations, which assume the data follows a multivariate normal (Gaussian) distribution.
+Financial data heavily violates this assumption due to extreme outliers (heavy tails) and
+discrete categories. To overcome this, we utilize the Rank PC algorithm \cite{harris2013pc}.
+
+Instead of analyzing raw data values, the Rank PC algorithm computes an empirical
+Spearman rank correlation matrix ($\hat{\mathbf{R}}$). Unlike standard Pearson
+correlation, which measures the linear relationship between exact numerical values,
+Spearman's correlation evaluates the monotonic relationship between the relative rankings
+of the data points (e.g., 1st, 2nd, 3rd largest). This rank-based approach makes it
+highly robust to extreme financial outliers. We then apply a mathematical transformation
+to this matrix:
+\begin{equation*}
+    \hat{\Sigma}_{ij} = 2 \sin\!\left(\frac{\pi}{6}\, \hat{R}_{ij}\right)
+\end{equation*}
+This transformation acts as a Gaussian copula, effectively mapping the rank correlations
+into a latent Gaussian space. This allows the standard PC conditional independence tests
+to remain valid without requiring the underlying data to be normally distributed.
+
+The algorithm then iteratively removes and orients edges (using a significance level of
+$\alpha = 0.05$), yielding a Completed Partially Directed Acyclic Graph (CPDAG). Finally,
+our adjustment set is defined as the Markov Boundary of the outcome $Y$ on this graph
+(its parents, children, and spouses), explicitly excluding the treatment variable $A$.
+
+\subsection{Markov Blanket Discovery via Fast-IAMB}
+
+Rather than learning the full graph, Fast-IAMB \cite{yaramakala2005speculative} directly
+targets the Markov Boundary of $Y$, which is sufficient for adjustment without the
+computational cost of global structure learning. To handle the mixed continuous-categorical
+nature of the data and avoid distributional assumptions, all continuous variables are
+discretized into three equiprobable categories (low, medium, high) using the quantile
+method prior to running the algorithm.
+
+Conditional dependence is evaluated via the $G^2$ likelihood-ratio test (equivalent to the
+mutual information test for discrete data):
+\begin{equation*}
+    G^2 = 2 \sum_{i, j, k} O_{ijk} \ln \left( \frac{O_{ijk}}{E_{ijk}} \right)
+\end{equation*}
+where $i$, $j$, $k$ index states of the candidate variable, the target $T$, and the
+current blanket $B(T)$ respectively; $O_{ijk}$ is the observed count and $E_{ijk}$ the
+expected count under conditional independence. The algorithm proceeds in two phases:
+
+\begin{algorithm}[H]
+\caption{Fast-IAMB \cite{yaramakala2005speculative}}
+\begin{algorithmic}[1]
+\State \textbf{Input:} Target $T$, Variables $V$, Dataset $D$
+\State \textbf{Phase I: Forward (Speculative) Phase}
+\State Initialize $B(T) \gets \emptyset$
+\Repeat
+    \State Find $X \in V \setminus B(T)$ maximizing the $G^2$ statistic with $T$ given $B(T)$
+    \If{$X \not\perp\!\!\!\perp T \mid B(T)$ (via $G^2$ test)}
+        \State $B(T) \gets B(T) \cup \{X\}$
+    \EndIf
+\Until{No variable is added}
+\State \textbf{Phase II: Backward (Elimination) Phase}
+\For{each $X \in B(T)$}
+    \If{$X \perp\!\!\!\perp T \mid B(T) \setminus \{X\}$ (via $G^2$ test)}
+        \State $B(T) \gets B(T) \setminus \{X\}$
+    \EndIf
+\EndFor
+\State \textbf{Return:} $B(T)$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Data-Adaptive Selection via LASSO}
+
+Standard LASSO variable selection applied only to the outcome model can introduce omitted
+variable bias: if a variable is a weak predictor of $Y$ but a strong driver of $A$, it
+constitutes a confounder that LASSO may drop, leaving an open backdoor path. The
+Post-Double-Selection procedure \cite{belloni2014inference} prevents this by fitting two
+separate $\ell_1$-penalized logistic regression models---one for $Y$ and one for $A$---and
+taking the union of the selected variables. For a generic binary target $T \in \{Y, A\}$:
+\begin{equation*}
+    \hat{\boldsymbol{\beta}}^{(T)} = \arg\min_{\boldsymbol{\beta}}
+    \left( -\frac{1}{n} \sum_{i=1}^{n} \log P(T_i \mid \mathbf{X}_i, \boldsymbol{\beta})
+    + \lambda_T \|\boldsymbol{\beta}\|_1 \right)
+\end{equation*}
+where $\lambda_T$ is selected by 10-fold cross-validation to minimise held-out deviance. The adjustment set is
+$\mathbf{L} = \hat{S}_Y \cup \hat{S}_A$, where $\hat{S}_T = \{j : \hat{\beta}_j^{(T)} \neq 0\}$.
+
+\section{Estimation and Inference}
+
+Given an adjustment set $\mathbf{L}$, the ACE is estimated via logistic regression. For a
+binary target $Z \in \{0,1\}$ and covariates $\mathbf{X}$, we model
+$\text{logit}(\mathbb{P}(Z=1 \mid \mathbf{X})) = \boldsymbol{\beta}^\top \mathbf{X}$ and
+obtain $\hat{\boldsymbol{\beta}}$ by maximum likelihood. We use two complementary
+estimators; agreement between them strengthens confidence that the result is not an
+artefact of one particular model:
+
+\paragraph{1. Outcome Regression (G-computation):}
+Let $Q(\mathbf{L}_i, a; \hat{\boldsymbol{\beta}}) = \mathbb{P}(Y=1 \mid A=a, \mathbf{L}_i;
+\hat{\boldsymbol{\beta}})$ be the predicted default probability. G-computation marginalises
+over the empirical covariate distribution:
+\begin{equation*}
+    \widehat{\text{ACE}}_{\text{OR}} = \frac{1}{n} \sum_{i=1}^n
+    \left( Q(\mathbf{L}_i, 1; \hat{\boldsymbol{\beta}}) -
+           Q(\mathbf{L}_i, 0; \hat{\boldsymbol{\beta}}) \right)
+\end{equation*}
+This estimator is consistent if the outcome model is correctly specified.
+
+\paragraph{2. Inverse Probability Weighting (IPW):}
+Let $\hat{\pi}(\mathbf{L}_i) = \mathbb{P}(A=1 \mid \mathbf{L}_i; \hat{\boldsymbol{\beta}})$
+be the estimated propensity score, truncated to $[0.001, 0.999]$ to prevent numerical
+instability from near-zero denominators:
+\begin{equation*}
+    \widehat{\text{ACE}}_{\text{IPW}} = \frac{1}{n} \sum_{i=1}^n
+    \left( \frac{A_i Y_i}{\hat{\pi}(\mathbf{L}_i)} -
+           \frac{(1-A_i)Y_i}{1-\hat{\pi}(\mathbf{L}_i)} \right)
+\end{equation*}
+This estimator is consistent if the propensity score model is correctly specified. When
+$\mathbf{L}$ is high-dimensional, extreme propensity scores inflate the variance of the
+IPW estimator, directly reflecting practical positivity violations.
+
+\subsection{Uncertainty Quantification}
+
+Statistical uncertainty is quantified via a non-parametric bootstrap ($B = 500$ resamples).
+In each iteration, the outcome and propensity score models are refitted on the resampled
+data for all four adjustment sets. The adjustment sets themselves are held fixed across
+iterations. For the LASSO strategy, this is theoretically justified by the post-selection
+inference guarantees of \cite{belloni2014inference}, which ensure that valid inference on
+the treatment effect can be conducted conditional on the selected set. For the structural
+methods (Rank PC and Fast-IAMB), the graph is fixed because structure learning algorithms
+are not designed to be bootstrapped: the Rank PC algorithm is consistent for a fixed
+population distribution \cite{harris2013pc}, but re-running it on each resample would
+conflate the variance of the causal estimators with the instability of graph estimation
+under small samples, making the resulting CIs difficult to interpret. Holding the graph
+fixed therefore isolates the quantity of interest, the uncertainty in the ACE given a
+fixed causal structure, at the cost of not propagating graph uncertainty into the
+intervals. Note that for the LASSO strategy, holding the set fixed may also underestimate
+total uncertainty given the moderate sample size ($n = 500$), as variable selection itself
+is a source of randomness. The 95\% confidence intervals are derived via the percentile
+method.
+
+\section{Results and Discussion}
+
+A naive comparison of default rates yields
+$\hat{\Delta}_{\text{naive}} = \mathbb{E}[Y \mid A=1] - \mathbb{E}[Y \mid A=0] \approx 0.132$,
+confirming substantial selection bias: customers who enroll in a PPP are observationally
+more likely to default, but this raw difference conflates self-selection with any genuine
+causal effect and cannot answer our first research question.
+
+The adjustment sets identified by each strategy are detailed in Table~\ref{tab:adj-sets},
+and the CPDAG recovered by Rank PC is shown in Figure~\ref{fig:cpdag}. The payment status
+variables form a densely connected temporal subgraph, but only \texttt{PAY\_0} has a direct
+edge into $Y$; the others influence $Y$ solely through \texttt{PAY\_0}. This
+Markov-shielding property is why the Rank PC adjustment set retains only \texttt{PAY\_0}
+from the payment history block, together with \texttt{LIMIT\_BAL} and \texttt{PAY\_AMT2}
+(children of $Y$ in the CPDAG)and \texttt{BILL\_AMT3} and \texttt{PAY\_AMT6} (spouses of $Y$)---five variables in total. Fast-IAMB recovers an even sparser boundary of two variables (\texttt{PAY\_0} and
+\texttt{PAY\_AMT4}), while LASSO selects 16 variables by design agnostic to the causal graph.
+
+\begin{table}[ht]
+    \centering
+    \caption{Adjustment sets selected by each strategy. The Full Model (not shown) uses
+    all 24 covariates. Structural methods identify the Markov Boundary of $Y$;
+    LASSO takes the union of variables selected for $Y$ and $A$ separately.}
+    \label{tab:adj-sets}
+    \small
+    \begin{tabular}{l l l}
+    \toprule
+    \textbf{LASSO (15 variables)} & \textbf{Rank PC (5 variables)} &
+    \textbf{Fast-IAMB (2 variables)} \\
+    \midrule
+    \texttt{LIMIT\_BAL, AGE, SEX}            & \texttt{LIMIT\_BAL} & \texttt{PAY\_0}    \\
+    \texttt{PAY\_0, PAY\_2, PAY\_3, PAY\_6}  & \texttt{PAY\_0}     & \texttt{PAY\_AMT4} \\
+    \texttt{BILL\_AMT6}                      & \texttt{PAY\_AMT2}  &                    \\
+    \texttt{PAY\_AMT1} to \texttt{PAY\_AMT6} & \texttt{BILL\_AMT3} &                    \\
+    \texttt{EDU\_University}                 & \texttt{PAY\_AMT6}  &                    \\
+    \bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{cpdag.png}
+    \caption{CPDAG recovered by the Rank PC algorithm ($\alpha = 0.05$, nonparanormal
+    transformation). Solid arrows are directed edges; dashed lines are undirected edges
+    whose orientation could not be determined from the data. Nodes are colour-coded by
+    variable type. The Markov blanket of $Y$ 
+    (parents \texttt{PAY\_0}, \texttt{PPP}; children \texttt{LIMIT\_BAL}, \texttt{PAY\_AMT2}; spouses \texttt{BILL\_AMT3}, \texttt{PAY\_AMT6}) is
+    visually highlighted.}
+    \label{fig:cpdag}
+\end{figure}
+
+Point estimates and bootstrap 95\% CIs for all eight estimator--adjustment combinations are
+in Table~\ref{tab:bootstrap-results} and Figure~\ref{fig:bootstrap}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.82\textwidth]{ace_bootstrap_CI_.png}
+    \caption{Point estimates (dots) and 95\% bootstrap percentile confidence intervals
+    (bars) for the ACE of PPP enrollment on default probability, across four adjustment
+    sets and two estimators. The dashed horizontal line marks ACE $= 0$. OR = Outcome
+    Regression (G-computation); IPW = Inverse Probability Weighting. $B = 500$ resamples.}
+    \label{fig:bootstrap}
+\end{figure}
+
+\begin{table}[H]
+    \centering
+    \caption{Bootstrap results ($B = 500$ resamples, percentile method). Width = upper
+    bound $-$ lower bound of the 95\% CI. Intervals crossing zero are shown in bold.}
+    \label{tab:bootstrap-results}
+    \small
+    \begin{tabular}{llccc}
+        \toprule
+        \textbf{Estimator} & \textbf{Adjustment} & \textbf{ACE} &
+        \textbf{95\,\% CI} & \textbf{Width} \\
+        \midrule
+        \multirow{4}{*}{OR}
+                             & Full      & 0.098 & $[0.017,\ 0.185]$          & 0.168 \\
+                             & LASSO     & 0.105 & $[0.020,\ 0.189]$          & 0.169 \\
+                             & Rank PC   & 0.118 & $[0.051,\ 0.187]$          & 0.136 \\
+                             & Fast-IAMB & 0.111 & $[0.045,\ 0.181]$          & 0.136 \\
+        \midrule
+        \multirow{4}{*}{IPW}
+                             & Full      & 0.087 & $\mathbf{[-0.051,\ 0.216]}$& 0.267 \\
+                             & LASSO     & 0.084 & $\mathbf{[-0.028,\ 0.193]}$& 0.221 \\
+                             & Rank PC   & 0.130 & $[0.062,\ 0.200]$          & 0.138 \\
+                             & Fast-IAMB & 0.111 & $[0.041,\ 0.183]$          & 0.142 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Positivity and Variance Inflation}
+
+The results expose a fundamental tension between predictive accuracy and causal validity.
+Under IPW, the Full and LASSO adjustment sets yield CIs that cross zero
+(Table~\ref{tab:bootstrap-results}), rendering the effect statistically indistinguishable
+from null despite positive point estimates. The mechanism is a practical positivity
+violation: conditioning on 24 (Full) or 16 (LASSO) variables allows the propensity model
+to predict treatment assignment with high accuracy for some individuals, driving propensity
+scores close to 0 or 1 and assigning them extreme inverse weights. This is not a failure of
+IPW as a method, but a signal that the adjustment set is too rich relative to $n = 500$.
+The Rank PC and Fast-IAMB sets (5 and 2 variables respectively) are sufficient to block the
+relevant backdoor paths while preserving well-behaved propensity scores, yielding CI widths
+of 0.136--0.142 under both estimators, roughly half those of the Full model. This directly
+answers our second research question: causal discovery does not merely provide a theoretically
+principled adjustment set, it also yields strictly more efficient estimates by preserving the
+positivity assumption.
+
+\subsection{Causal Interpretation}
+
+Across all correctly specified structural models, the ACE is consistently positive and
+statistically significant. Adjusting for the estimated confounding bias of approximately
+3.4\,p.p.\ ($\hat{\Delta}_{\text{naive}} - \widehat{\text{ACE}}_{\text{OR, Full}} \approx
+0.034$), the pure causal effect of PPP enrollment on default probability ranges from
+approximately $+10$ to $+13$ percentage points, directly answering our first research
+question: PPPs increase, rather than decrease, the probability of default.
+
+These findings are consistent with a moral hazard mechanism \cite{arrow1963uncertainty}:
+when customers are shielded from the immediate financial cost of missing a payment, the
+incentive to manage liquidity carefully is weakened, ultimately increasing default
+probability. Stiglitz and Weiss \cite{stiglitz1981credit} formalised this logic in the
+credit market, showing that reducing the effective cost of non-repayment shifts borrowers
+toward riskier strategies. The present results are consistent with this interpretation,
+though the simulated nature of the dataset precludes definitive causal attribution to
+this specific behavioral channel.
+
+\section{Conclusion}
+
+This study provides causal evidence that Payment Protection Plans increase the probability
+of credit default. After controlling for confounding through structural causal discovery,
+the estimated ACE ranges from $+11$ to $+13$ p.p., with CIs excluding zero across all
+correctly specified adjustment sets.
+
+Furthermore, causal discovery methods (Rank PC, Fast-IAMB)
+recover parsimonious adjustment sets that satisfy the positivity assumption and yield
+confidence intervals roughly half as wide as those from high-dimensional predictive
+adjustment. In observational causal inference, parsimony in covariate selection is a requirement for valid inference.
+
+\subsection{Limitations}
+
+Four limitations deserve mention. First, the dataset contains only $n = 500$ observations,
+limiting statistical power and making high-dimensional adjustment fragile. Second, causal
+identification rests on conditional exchangeability (no unmeasured confounders); variables
+such as individual risk tolerance are unobserved and, if correlated with both PPP enrollment
+and default propensity, would bias the ACE upward---reinforcing but potentially
+overstating the positive effect found here. Third, the Rank PC graph is sensitive to
+$\alpha$ and the specific sample; graph uncertainty is not propagated into the bootstrap
+CIs. Fourth, both estimators assume a logistic outcome model (linearity in the log-odds),
+which was not formally validated; misspecification could bias the OR estimates while leaving
+IPW estimates consistent, so the convergence between OR and IPW across structural adjustment
+sets provides partial reassurance.
+
+\subsection{Practical Implications}
+
+These findings suggest that PPP enrollment should be treated as a risk indicator rather than
+a mitigant. Financial institutions may benefit from segmenting customers before enrollment,
+identifying profiles for which the behavioral response to payment deferral is more
+pronounced, and pricing protection plans to reflect the increased default risk they may
+induce.
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

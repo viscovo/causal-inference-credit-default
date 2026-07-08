@@ -1,0 +1,242 @@
+[
+  {
+    "from": "Y",
+    "to": "LIMIT_BAL",
+    "type": "directed",
+    "text": "Y -> LIMIT_BAL"
+  },
+  {
+    "from": "Y",
+    "to": "PAY_AMT2",
+    "type": "directed",
+    "text": "Y -> PAY_AMT2"
+  },
+  {
+    "from": "PPP",
+    "to": "Y",
+    "type": "directed",
+    "text": "PPP -> Y"
+  },
+  {
+    "from": "AGE",
+    "to": "PPP",
+    "type": "undirected",
+    "text": "AGE -- PPP"
+  },
+  {
+    "from": "LIMIT_BAL",
+    "to": "EDU_ORD",
+    "type": "directed",
+    "text": "LIMIT_BAL -> EDU_ORD"
+  },
+  {
+    "from": "LIMIT_BAL",
+    "to": "PAY_AMT3",
+    "type": "directed",
+    "text": "LIMIT_BAL -> PAY_AMT3"
+  },
+  {
+    "from": "LIMIT_BAL",
+    "to": "PAY_AMT5",
+    "type": "directed",
+    "text": "LIMIT_BAL -> PAY_AMT5"
+  },
+  {
+    "from": "AGE",
+    "to": "EDU_ORD",
+    "type": "directed",
+    "text": "AGE -> EDU_ORD"
+  },
+  {
+    "from": "PAY_0",
+    "to": "Y",
+    "type": "directed",
+    "text": "PAY_0 -> Y"
+  },
+  {
+    "from": "PAY_2",
+    "to": "PAY_0",
+    "type": "directed",
+    "text": "PAY_2 -> PAY_0"
+  },
+  {
+    "from": "PAY_2",
+    "to": "PAY_5",
+    "type": "directed",
+    "text": "PAY_2 -> PAY_5"
+  },
+  {
+    "from": "PAY_3",
+    "to": "PAY_0",
+    "type": "directed",
+    "text": "PAY_3 -> PAY_0"
+  },
+  {
+    "from": "PAY_3",
+    "to": "PAY_2",
+    "type": "directed",
+    "text": "PAY_3 -> PAY_2"
+  },
+  {
+    "from": "PAY_3",
+    "to": "PAY_4",
+    "type": "undirected",
+    "text": "PAY_3 -- PAY_4"
+  },
+  {
+    "from": "PAY_3",
+    "to": "PAY_6",
+    "type": "directed",
+    "text": "PAY_3 -> PAY_6"
+  },
+  {
+    "from": "PAY_4",
+    "to": "PAY_5",
+    "type": "directed",
+    "text": "PAY_4 -> PAY_5"
+  },
+  {
+    "from": "PAY_5",
+    "to": "PAY_6",
+    "type": "directed",
+    "text": "PAY_5 -> PAY_6"
+  },
+  {
+    "from": "PAY_5",
+    "to": "BILL_AMT4",
+    "type": "directed",
+    "text": "PAY_5 -> BILL_AMT4"
+  },
+  {
+    "from": "PAY_6",
+    "to": "BILL_AMT5",
+    "type": "directed",
+    "text": "PAY_6 -> BILL_AMT5"
+  },
+  {
+    "from": "BILL_AMT1",
+    "to": "PAY_2",
+    "type": "directed",
+    "text": "BILL_AMT1 -> PAY_2"
+  },
+  {
+    "from": "BILL_AMT1",
+    "to": "BILL_AMT2",
+    "type": "directed",
+    "text": "BILL_AMT1 -> BILL_AMT2"
+  },
+  {
+    "from": "BILL_AMT1",
+    "to": "BILL_AMT3",
+    "type": "directed",
+    "text": "BILL_AMT1 -> BILL_AMT3"
+  },
+  {
+    "from": "BILL_AMT2",
+    "to": "BILL_AMT3",
+    "type": "directed",
+    "text": "BILL_AMT2 -> BILL_AMT3"
+  },
+  {
+    "from": "BILL_AMT2",
+    "to": "BILL_AMT5",
+    "type": "directed",
+    "text": "BILL_AMT2 -> BILL_AMT5"
+  },
+  {
+    "from": "BILL_AMT2",
+    "to": "PAY_AMT1",
+    "type": "directed",
+    "text": "BILL_AMT2 -> PAY_AMT1"
+  },
+  {
+    "from": "BILL_AMT3",
+    "to": "BILL_AMT4",
+    "type": "directed",
+    "text": "BILL_AMT3 -> BILL_AMT4"
+  },
+  {
+    "from": "BILL_AMT3",
+    "to": "PAY_AMT2",
+    "type": "directed",
+    "text": "BILL_AMT3 -> PAY_AMT2"
+  },
+  {
+    "from": "BILL_AMT4",
+    "to": "BILL_AMT5",
+    "type": "directed",
+    "text": "BILL_AMT4 -> BILL_AMT5"
+  },
+  {
+    "from": "BILL_AMT4",
+    "to": "BILL_AMT6",
+    "type": "directed",
+    "text": "BILL_AMT4 -> BILL_AMT6"
+  },
+  {
+    "from": "BILL_AMT4",
+    "to": "PAY_AMT3",
+    "type": "directed",
+    "text": "BILL_AMT4 -> PAY_AMT3"
+  },
+  {
+    "from": "BILL_AMT5",
+    "to": "BILL_AMT6",
+    "type": "directed",
+    "text": "BILL_AMT5 -> BILL_AMT6"
+  },
+  {
+    "from": "BILL_AMT5",
+    "to": "PAY_AMT4",
+    "type": "directed",
+    "text": "BILL_AMT5 -> PAY_AMT4"
+  },
+  {
+    "from": "BILL_AMT6",
+    "to": "PAY_AMT5",
+    "type": "directed",
+    "text": "BILL_AMT6 -> PAY_AMT5"
+  },
+  {
+    "from": "PAY_AMT1",
+    "to": "PAY_AMT3",
+    "type": "directed",
+    "text": "PAY_AMT1 -> PAY_AMT3"
+  },
+  {
+    "from": "PAY_AMT1",
+    "to": "PAY_AMT4",
+    "type": "directed",
+    "text": "PAY_AMT1 -> PAY_AMT4"
+  },
+  {
+    "from": "PAY_AMT2",
+    "to": "PAY_AMT4",
+    "type": "directed",
+    "text": "PAY_AMT2 -> PAY_AMT4"
+  },
+  {
+    "from": "PAY_AMT2",
+    "to": "PAY_AMT5",
+    "type": "directed",
+    "text": "PAY_AMT2 -> PAY_AMT5"
+  },
+  {
+    "from": "PAY_AMT3",
+    "to": "PAY_AMT5",
+    "type": "directed",
+    "text": "PAY_AMT3 -> PAY_AMT5"
+  },
+  {
+    "from": "PAY_AMT6",
+    "to": "LIMIT_BAL",
+    "type": "directed",
+    "text": "PAY_AMT6 -> LIMIT_BAL"
+  },
+  {
+    "from": "PAY_AMT6",
+    "to": "PAY_AMT4",
+    "type": "directed",
+    "text": "PAY_AMT6 -> PAY_AMT4"
+  }
+]
